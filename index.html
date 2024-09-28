@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>3D Math Function Parser with Three.js</title>
+    <style>
+        body { margin: 0; }
+        canvas { display: block; }
+        #controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 10;
+            background-color: rgba(255, 255, 255, 0.8);
+            padding: 10px;
+            border-radius: 5px;
+        }
+        #controls label, #controls input, #controls button {
+            display: block;
+            margin-bottom: 10px;
+        }
+        #latexPreview {
+            margin-top: 10px;
+            font-size: 1.2em;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/9.4.4/math.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@esm-bundle/shim@1.1.1/shim.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" id="MathJax-script"></script>
+</head>
+<body>
+    <div id="controls">
+        <label for="latexInput">Enter LaTeX formula:</label>
+        <input type="text" id="latexInput" value="\sqrt{(x-1)^2 + y^2} * \sqrt{(x+1)^2 + y^2}">
+        <div id="latexPreview"></div>
+        <button id="plotButton">Plot Function</button>
+        <label for="bgColor">Background Color:</label>
+        <input type="color" id="bgColor" value="#000000">
+        <label for="color1">Color 1:</label>
+        <input type="color" id="color1" value="#FF0000">
+        <label for="color2">Color 2:</label>
+        <input type="color" id="color2" value="#0000FF">
+        <label for="showGrid">Show Grid:</label>
+        <input type="checkbox" id="showGrid" checked>
+        <label for="cameraX">Camera X:</label>
+        <input type="number" id="cameraX" value="0">
+        <label for="cameraY">Camera Y:</label>
+        <input type="number" id="cameraY" value="0">
+        <label for="cameraZ">Camera Z:</label>
+        <input type="number" id="cameraZ" value="10">
+        <label for="cameraRotationX">Camera Rotation X (deg):</label>
+        <input type="number" id="cameraRotationX" value="0">
+        <label for="cameraRotationY">Camera Rotation Y (deg):</label>
+        <input type="number" id="cameraRotationY" value="0">
+        <label for="cameraRotationZ">Camera Rotation Z (deg):</label>
+        <input type="number" id="cameraRotationZ" value="0">
+        <button id="setCameraButton">Set Camera</button>
+    </div>
+    <script>
+        // Scene setup
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Create the function to be plotted
+        function createSurfaceGeometry(funcStr, minX, maxX, minY, maxY, step) {
+            const positions = [];
+            const indices = [];
+            const func = math.compile(funcStr);
+
+            let index = 0;
+            for (let x = minX; x <= maxX; x += step) {
+                for (let y = minY; y <= maxY; y += step) {
+                    const scope1 = { x: x, y: y };
+                    const scope2 = { x: x + step, y: y };
+                    const scope3 = { x: x + step, y: y + step };
+                    const scope4 = { x: x, y: y + step };
+
+                    const z1 = func.evaluate(scope1);
+                    const z2 = func.evaluate(scope2);
+                    const z3 = func.evaluate(scope3);
+                    const z4 = func.evaluate(scope4);
+
+                    if (!isNaN(z1) && !isNaN(z2) && !isNaN(z3) && !isNaN(z4)) {
+                        positions.push(x, y, z1);
+                        positions.push(x + step, y, z2);
+                        positions.push(x + step, y + step, z3);
+                        positions.push(x, y + step, z4);
+
+                        // Define the triangles
+                        indices.push(index + 0, index + 1, index + 2);
+                        indices.push(index + 0, index + 2, index + 3);
+                        index += 4;
+                    }
+                }
+            }
+
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geometry.setIndex(indices);
+            return geometry;
+        }
+
+        // Vertex shader
+        const vertexShader = `
+            varying vec3 vPosition;
+            void main() {
+                vPosition = position;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `;
+
+        // Fragment shader
+        function getFragmentShader() {
+            return `
+                varying vec3 vPosition;
+                uniform vec3 uColor1;
+                uniform vec3 uColor2;
+                void main() {
+                    float distance = length(vPosition);
+                    vec3 color = mix(uColor1, uColor2, distance / 10.0); // Example color gradient
+                    gl_FragColor = vec4(color, 1.0);
+                }
+            `;
+        }
+
+        // Create and add the surface mesh
+        function plotFunction(funcStr, minX, maxX, minY, maxY, step, color1, color2) {
+            const material = new THREE.ShaderMaterial({
+                vertexShader: vertexShader,
+                fragmentShader: getFragmentShader(),
+                uniforms: {
+                    uColor1: { value: color1 },
+                    uColor2: { value: color2 }
+                },
+                side: THREE.DoubleSide
+            });
+
+            const geometry = createSurfaceGeometry(funcStr, minX, maxX, minY, maxY, step);
+            const surface = new THREE.Mesh(geometry, material);
+            scene.add(surface);
+        }
+
+        // Clear the scene but keep the grid
+        function clearScene() {
+            scene.traverse(object => {
+                if (object.type === 'Mesh' && object !== gridHelperXZ && object !== gridHelperXY && object !== gridHelperYZ) {
+                    scene.remove(object);
+                }
+            });
+        }
+
+        // Initial plot
+        const initialColor1 = new THREE.Color('#FF0000');
+        const initialColor2 = new THREE.Color('#0000FF');
+        plotFunction("z=sqrt((x-1)^2+y^2)*sqrt((x+1)^2+y^2)", -3, 3, -3, 3, 0.1, initialColor1, initialColor2);
+
+        // Position the camera
+        camera.position.set(0, 0, 10); // Initial camera position
+
+        // Add OrbitControls for camera control
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableZoom = true; // Enable zooming
+        controls.enablePan = true;  // Enable panning
+        controls.enableRotate = true; // Enable rotation
+
+        // Add a light source (if using a material that requires lighting)
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+
+        // Add grid helpers
+        const gridHelperXZ = new THREE.GridHelper(20, 20, 0x444444, 0x444444);
+        const gridHelperXY = new THREE.GridHelper(20, 20, 0x444444, 0x444444);
+        const gridHelperYZ = new THREE.GridHelper(20, 20, 0x444444, 0x444444);
+
+        gridHelperXY.rotation.x = Math.PI / 2;
+        gridHelperYZ.rotation.y = Math.PI / 2;
+
+        // Function to toggle grid visibility
+        function toggleGrid(showGrid) {
+            gridHelperXZ.visible = showGrid;
+            gridHelperXY.visible = showGrid;
+            gridHelperYZ.visible = showGrid;
+        }
+
+        // Initial grid visibility
+        toggleGrid(true);
+        scene.add(gridHelperXZ, gridHelperXY, gridHelperYZ);
+
+        // Render loop
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update(); // Update controls
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Add color picker functionality
+        const colorPicker = document.getElementById('bgColor');
+        colorPicker.addEventListener('change', (event) => {
+            const color = event.target.value;
+            renderer.setClearColor(color);
+        });
+
+        // Add function input functionality
+        const latexInput = document.getElementById('latexInput');
+        const plotButton = document.getElementById('plotButton');
+        const color1Picker = document.getElementById('color1');
+        const color2Picker = document.getElementById('color2');
+        const showGridCheckbox = document.getElementById('showGrid');
+
+        plotButton.addEventListener('click', () => {
+            const latexFormula = latexInput.value;
+            const funcStr = convertLatexToExpression(latexFormula);
+            const color1 = new THREE.Color(color1Picker.value);
+            const color2 = new THREE.Color(color2Picker.value);
+            clearScene();
+            plotFunction(funcStr, -3, 3, -3, 3, 0.1, color1, color2);
+            toggleGrid(showGridCheckbox.checked);
+        });
+
+        // Update colors on change
+        color1Picker.addEventListener('change', () => {
+            const color1 = new THREE.Color(color1Picker.value);
+            const color2 = new THREE.Color(color2Picker.value);
+            clearScene();
+            plotFunction(convertLatexToExpression(latexInput.value), -3, 3, -3, 3, 0.1, color1, color2);
+            toggleGrid(showGridCheckbox.checked);
+        });
+
+        color2Picker.addEventListener('change', () => {
+            const color1 = new THREE.Color(color1Picker.value);
+            const color2 = new THREE.Color(color2Picker.value);
+            clearScene();
+            plotFunction(convertLatexToExpression(latexInput.value), -3, 3, -3, 3, 0.1, color1, color2);
+            toggleGrid(showGridCheckbox.checked);
+        });
+
+        // Toggle grid visibility on checkbox change
+        showGridCheckbox.addEventListener('change', () => {
+            toggleGrid(showGridCheckbox.checked);
+        });
+
+        // Set camera position and rotation
+        const cameraXInput = document.getElementById('cameraX');
+        const cameraYInput = document.getElementById('cameraY');
+        const cameraZInput = document.getElementById('cameraZ');
+        const cameraRotationXInput = document.getElementById('cameraRotationX');
+        const cameraRotationYInput = document.getElementById('cameraRotationY');
+        const cameraRotationZInput = document.getElementById('cameraRotationZ');
+        const setCameraButton = document.getElementById('setCameraButton');
+
+        setCameraButton.addEventListener('click', () => {
+            const cameraX = parseFloat(cameraXInput.value);
+            const cameraY = parseFloat(cameraYInput.value);
+            const cameraZ = parseFloat(cameraZInput.value);
+            const cameraRotationX = parseFloat(cameraRotationXInput.value) * Math.PI / 180; // Convert degrees to radians
+            const cameraRotationY = parseFloat(cameraRotationYInput.value) * Math.PI / 180; // Convert degrees to radians
+            const cameraRotationZ = parseFloat(cameraRotationZInput.value) * Math.PI / 180; // Convert degrees to radians
+
+            camera.position.set(cameraX, cameraY, cameraZ);
+            camera.rotation.set(cameraRotationX, cameraRotationY, cameraRotationZ);
+            camera.updateMatrixWorld(); // Ensure the camera's matrix is updated
+        });
+
+        // Update input fields when camera changes
+        function updateCameraInputs() {
+            cameraXInput.value = camera.position.x.toFixed(2);
+            cameraYInput.value = camera.position.y.toFixed(2);
+            cameraZInput.value = camera.position.z.toFixed(2);
+
+            // Convert radians to degrees and handle wraparound
+            const rotationX = (camera.rotation.x * 180 / Math.PI) % 360;
+            const rotationY = (camera.rotation.y * 180 / Math.PI) % 360;
+            const rotationZ = (camera.rotation.z * 180 / Math.PI) % 360;
+
+            cameraRotationXInput.value = (rotationX + 360) % 360; // Ensure positive values
+            cameraRotationYInput.value = (rotationY + 360) % 360; // Ensure positive values
+            cameraRotationZInput.value = (rotationZ + 360) % 360; // Ensure positive values
+        }
+
+        // Listen for changes in the camera position and rotation
+        controls.addEventListener('change', updateCameraInputs);
+
+        // Initialize the input fields with the current camera values
+        updateCameraInputs();
+
+        // LaTeX input and preview
+        const latexPreview = document.getElementById('latexPreview');
+
+        function updateLatexPreview() {
+            const latexFormula = latexInput.value;
+            latexPreview.innerHTML = `\\(${latexFormula}\\)`;
+            MathJax.typesetPromise([latexPreview]).then(() => {
+                console.log('LaTeX rendered successfully');
+            }).catch((err) => {
+                console.error('Error rendering LaTeX:', err);
+            });
+        }
+
+        // Initial update
+        updateLatexPreview();
+
+        // Update preview on input change
+        latexInput.addEventListener('input', updateLatexPreview);
+
+        // Convert LaTeX to expression
+        function convertLatexToExpression(latexFormula) {
+            // Replace LaTeX specific characters with Math.js compatible expressions
+            let expression = latexFormula.replace(/\\sqrt\{(.+?)\}/g, 'sqrt($1)');
+            expression = expression.replace(/\*\*/g, '^'); // Replace double asterisk with caret
+            expression = expression.replace(/\s/g, ''); // Remove spaces
+            expression = expression.replace(/\\cdot/g, '*'); // Replace \cdot with *
+            return `z=${expression}`;
+        }
+    </script>
+</body>
+</html>
